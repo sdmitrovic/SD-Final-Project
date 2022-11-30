@@ -1,0 +1,134 @@
+---
+title:  'Final Project'
+subtitle: 'INFO 523'
+author:
+- name: Student -  [Sanja Dmitrovic]
+  affiliation: [James C. Wyant College of Optical Sciences, University of Arizona, Tucson, AZ]
+- name: Instructor -  Cristian Román-Palacios
+  affiliation: School of Information, University of Arizona, Tucson, AZ
+tags: [R, RStudio, FinalProject]
+output: html_document
+---
+
+### Objective
+The boundary between the atmosphere and the ocean, known as the marine atmospheric boundary layer (MABL), is a critical research area because of the host of processes that take place in this area. This interface hosts transport processes such as the modulation of sensible and latent heat fluxes, the exchange of gases such as carbon dioxide, and the transport of aerosol particles. The characterization and modelling of MABL dynamics lead to improved simulation of large-scale phenomena such as climate change and global weather patterns. To model these dynamics, ocean surface winds speeds are typically retrieved because these winds drive these MABL exchanges. Remote sensing has extensively been used to retrieve surface winds because these instruments can monitor much larger areas using electromagnetic radiation to receive information on ocean surface wave slopes, providing wind data on a significantly larger scale compared to buoy and ship data.
+
+The goal of this code is to provide an introduction to remotely-sensed wind speed data by going through the steps of data mining learned in Week 1. The main goals are to 1) show how to transform high-volume, 4-dimensional geographical data into manageable dataframes, 2) use visualization to observe patterns in the data. Data wrangling and visualizing georaster data are particular difficult tasks, which is why I focus on these topics learned from class. 
+
+The data being used comes from the Advanced Scatterometer (ASCAT), which is a microwave remote sensor onboard the Metop satellites. I choose this data set because it is one of the most popular wind data sets in the climate community and is easily accessible through the public domain. 
+
+###Step 1: Installing appropriate packages and loading libraries. There are a lot of packages necessary to read in and plot geographical data. 
+
+```{r}
+#install.packages("ncdf4",dependencies = TRUE) 
+#install.packages("sp", dependencies = TRUE)
+#install.packages("sf", dependencies = TRUE)
+#install.packages("raster", dependencies = TRUE)
+#install.packages("parsedate", dependencies = TRUE)
+#install.packages("plotdap", dependencies = TRUE)
+#install.packages("rerddap", dependencies = TRUE)
+#install.packages("rerddapXtracto", dependencies = TRUE)
+#install.packages("mapdata", dependencies = TRUE)
+#install.packages("gifski", dependencies = TRUE)
+
+library("rerddap")
+library("rerddapXtracto")
+library("gganimate")
+library("ggplot2")
+library("tidyverse")
+library("plotdap")
+library("spData")
+library("ggsn")
+library("oce")
+library("gifski")
+library("lubridate")
+```
+
+
+###Step 2: Data wrangling. The most difficult part of geographical data analysis is turning the data into a usable form because the data is always 4D. Climate variables can never be viewed statically. Also, these files tend to be very large due to the extensive amount of data, so it's important to pick date ranges that do not lead to excessive computational cost.
+
+```{r}
+#The rerddap package allows you to access publicly available climate and oceanographic data by accessing the NOAA ERDDAP database. This is how the ASCAT wind data product is loaded into R. You can manually read in the files and stitch together all of the variables (which I do in my research), but the package greatly simplifies the process. 
+ascat <- rerddap::info("erdQBwind1day")
+
+#You must specify which region and which dates you want the data to include.
+lat <- c(20, 70)
+lon <- c(-90, -60)
+#Wind speeds are always reported 10 meters above sea level. This is the point where the atmosphere is at neutral stability.
+alt <- rep(10., length(lon))  
+dates <- c("2015-01-02", "2016-01-01")
+
+#In ASCAT and most satellite data products, horizontal and vertical winds are reported separately.
+wind_x <- rxtracto_3D(ascat, parameter = 'x_wind', xcoord = lon, ycoord = lat, zcoord = alt, tcoord = dates)
+wind_y <- rxtracto_3D(ascat, parameter = 'y_wind', xcoord = lon, ycoord = lat, zcoord = alt, tcoord = dates)
+
+#Horizontal winds are called the u-component and vertical winds are called the v-component. 
+u = wind_x$x_wind
+v = wind_y$y_wind
+
+#It's important to have longitude, latitude, and time included with the wind data. 
+longitude = wind_x$longitude
+latitude = wind_x$latitude
+time = wind_x$time%>%as.Date()
+
+#To get the total wind speed, you must use the equation below. Most people do not work with just u or v components. 
+mag = sqrt(u^2 + v^2)
+
+#I create a data frame with wind speed, longitude, latitude for all dates using a for loop.
+wind_speed = NULL
+
+for (i in 1:length(time)){
+  mags = data.frame(longitude, mag[,,,i] %>% as.data.frame()) %>% 
+    gather(key = "key" , value = "mag", 2:202) %>% 
+    mutate(latitude = rep(latitude, each = 121), date = time[i]) %>% 
+    select(date,longitude, latitude, mag)%>% 
+    as_tibble()
+  
+  wind_speed = wind_speed %>% bind_rows(mags)
+}
+
+#NA's are persistent throughout the wind data set because ASCAT does not report winds at all times/all locations. Quality control is also performed, so any unsatisfactory wind value becomes NaN. For instance, winds taken in areas of high precipitation are typically omitted because rain significantly degrades the instrument's signal. 
+wind_speed = na.omit(wind_speed)
+```
+
+###Step 3: Data Visualization
+
+```{r}
+#Plot 1: Animated map of ACTIVATE region's wind speeds per day. Winds are dynamic by nature, so it's useful to see how they change with time. 
+wind.animate <- ggplot() + 
+  geom_raster(data = wind_speed, 
+              aes(x = longitude, y = latitude, fill = mag), interpolate = FALSE) +
+  geom_sf(data = spData::world, col = "black", fill = "white")+
+  coord_sf(xlim = c(-80,-65), ylim =  c(50,25))+
+  scale_fill_gradientn(name = "Wind\nSpeed\n(m/s)", limits = c(0,20),
+                       colors = oceColorsPalette(75))+
+  theme_bw()+
+  theme(panel.background = element_rect(fill = "white"),
+        axis.text = element_text(size = 10, color = 1),
+        panel.grid = element_line(colour = NA),
+        legend.position = c(1.25,.25),
+        legend.background = element_rect())+
+  scale_x_continuous(breaks = c(-70,-90))+
+  scale_y_continuous(breaks = c(30, 50)) +
+  labs(title = "2015 Daily ASCAT wind speeds\nfor US East Coast.", subtitle = "{frame_time}", caption = "It seems that winter days have more variable wind speeds than summer days.") +
+  transition_time(date) +
+  ease_aes('linear')
+
+animate(plot = wind.animate, fps = 2, renderer = gifski_renderer())
+
+#Plot 2: Monthly view of 2015 mean ASCAT winds to see monthly/seasonal trends. It is hard to see overall trends through the daily view, which is why a monthly category is added to the data frame. 
+wind_speed = wind_speed %>%
+  mutate(month = month(date)) %>%
+  select(date, month, longitude, latitude, mag)
+
+wind_speed_monthly = wind_speed %>%
+  group_by(longitude, latitude, month) %>%
+  summarise(mag = mean(mag, na.rm = TRUE))
+wind_speed_monthly$month = as.integer(wind_speed_monthly$month)
+
+ggplot(data = wind_speed_monthly, aes(x = mag, y = as.factor(month), fill = as.factor(month))) + geom_boxplot(outlier.shape = NA, show.legend = FALSE) + coord_flip() + labs(title = "Boxplots of 2015 Monthly ASCAT Winds for US East Coast", subtitle = "The highest winds are seen in February whereas the lowest are seen in August.\nIt makes sense that winter months generally have higher winds than summer months.", x = "Mean Wind Speed (m/s)", y = "Month")
+
+#Plot 3: Line plot of monthly 2015 mean ASCAT winds to see wind speed trend over time more clearly.
+ggplot(wind_speed_monthly, aes(x = month)) + geom_smooth(aes(y = mag)) + theme_bw() + labs(title = "Line graph of 2015 Monthly ASCAT Winds for US East Coast", subtitle = "The line plot shows more clearly how wind speeds changed over the course of 12 months.\nWinds peak in February, steadily decrease until August, and then keep increasing until December.", x = "Month", y = "Mean Wind Speed (m/s)")
+
+```
